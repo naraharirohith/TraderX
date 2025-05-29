@@ -11,4 +11,14 @@ contract MockPriceFeed {
     function getPrice() external view returns (uint256) {
         return price;
     }
+
+    function latestRoundData() public view returns (
+        uint80 roundId,
+        int256 answer,
+        uint256 startedAt,
+        uint256 updatedAt,
+        uint80 answeredInRound
+    ) {
+        return (uint80(0), int256(price), 0, 0, uint80(0));
+    }
 }
