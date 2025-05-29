@@ -8,17 +8,11 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 /// @title LPToken - ERC20 token representing liquidity shares
 contract LPToken is ERC20, Ownable {
     constructor() ERC20("XCV LP Token", "XCV-LP") Ownable(msg.sender) {}
-    
-    /// @notice Mint new tokens
-    /// @param to Address to mint tokens to
-    /// @param amount Amount of tokens to mint
+
     function mint(address to, uint256 amount) external onlyOwner {
         _mint(to, amount);
     }
 
-    /// @notice Burn tokens 
-    /// @param from Address to burn tokens from
-    /// @param amount Amount of tokens to burn
     function burn(address from, uint256 amount) external {
         _burn(from, amount);
     }
@@ -28,10 +22,17 @@ contract LPToken is ERC20, Ownable {
 contract LiquidityPool {
     IERC20 public collateralToken;
     LPToken public lpToken;
-    address public market; // Only market can reserve/release funds
+    address public market;
 
     uint256 public totalLiquidity;
     uint256 public reservedLiquidity;
+    uint256 public totalCollateralDeposited;
+    uint256 public totalCollateralWithdrawn;
+
+    event Deposit(address indexed user, uint256 amount, uint256 sharesMinted);
+    event Withdraw(address indexed user, uint256 sharesBurned, uint256 amount);
+    event Reserve(address indexed market, uint256 amount);
+    event Release(address indexed market, uint256 amount);
 
     constructor(address _collateralToken) {
         collateralToken = IERC20(_collateralToken);
@@ -58,6 +59,9 @@ contract LiquidityPool {
 
         lpToken.mint(msg.sender, shares);
         totalLiquidity += amount;
+        totalCollateralDeposited += amount;
+
+        emit Deposit(msg.sender, amount, shares);
     }
 
     function withdraw(uint256 shares) external {
@@ -69,18 +73,25 @@ contract LiquidityPool {
 
         lpToken.burn(msg.sender, shares);
         totalLiquidity -= amount;
+        totalCollateralWithdrawn += amount;
 
         require(collateralToken.transfer(msg.sender, amount), "Transfer failed");
+
+        emit Withdraw(msg.sender, shares, amount);
     }
 
     function reserve(uint256 amount) external onlyMarket {
         require(totalLiquidity - reservedLiquidity >= amount, "Insufficient available liquidity");
         reservedLiquidity += amount;
+
+        emit Reserve(msg.sender, amount);
     }
 
     function release(uint256 amount) external onlyMarket {
         require(reservedLiquidity >= amount, "Not reserved");
         reservedLiquidity -= amount;
+
+        emit Release(msg.sender, amount);
     }
 
     function availableLiquidity() external view returns (uint256) {
