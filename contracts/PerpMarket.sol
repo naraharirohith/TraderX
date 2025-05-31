@@ -4,8 +4,6 @@ pragma solidity ^0.8.19;
 import "./LiquidityPool.sol";
 import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
 
-
-
 interface IPriceFeed {
     function getPrice() external view returns (uint256); // returns price in 1e8 format
 }
@@ -23,10 +21,10 @@ contract PerpMarket {
     mapping(address => Position) public positions;
     LiquidityPool public pool;
     IERC20 public collateralToken;
-    
 
     uint256 public minCollateralRatio = 10e4; // 10%, in basis points
     uint256 public fundingRate = 50; // 0.005% per hour (0.00005 * 1e6)
+    uint256 public maxUtilizationRatio = 8000; // 80%, in basis points
 
     event PositionOpened(address indexed user, uint256 size, uint256 collateral, uint256 entryPrice, bool isLong);
     event PositionClosed(address indexed user, uint256 finalCollateral, int256 pnl);
@@ -39,14 +37,17 @@ contract PerpMarket {
     }
 
     function getLatestPrice() public view returns (int256) {
-        (
-            , 
-            int256 price,
-            ,
-            ,
-            
-        ) = priceFeed.latestRoundData();
+        (, int256 price, , , ) = priceFeed.latestRoundData();
         return price;
+    }
+
+    function _validateUtilization(uint256 sizeUsd) internal view {
+        uint256 total = pool.totalLiquidity();
+        uint256 reserved = pool.reservedLiquidity();
+        require(total > 0, "Empty pool");
+
+        uint256 utilization = ((reserved + sizeUsd) * 10000) / total;
+        require(utilization <= maxUtilizationRatio, "Exceeds utilization limit");
     }
 
     function openPosition(uint256 collateralAmount, uint256 leverage, bool isLong) external {
@@ -58,6 +59,7 @@ contract PerpMarket {
         require(price > 0, "Invalid price");
 
         uint256 sizeUsd = (collateralAmount * leverage) / 1e6;
+        _validateUtilization(sizeUsd);
 
         require(collateralToken.transferFrom(msg.sender, address(this), collateralAmount), "Transfer failed");
         collateralToken.approve(address(pool), collateralAmount);
@@ -83,19 +85,19 @@ contract PerpMarket {
         require(price > 0, "Invalid price");
 
         uint256 addedSizeUsd = (additionalCollateral * additionalLeverage) / 1e6;
+        _validateUtilization(addedSizeUsd);
 
         require(collateralToken.transferFrom(msg.sender, address(this), additionalCollateral), "Transfer failed");
         collateralToken.approve(address(pool), additionalCollateral);
         pool.reserve(additionalCollateral);
 
-        // Weighted average entry price
         uint256 newSize = p.size + addedSizeUsd;
         p.entryPrice = (p.entryPrice * p.size + price * addedSizeUsd) / newSize;
 
         p.size = newSize;
         p.collateral += additionalCollateral;
 
-        emit PositionDecreased(msg.sender, addedSizeUsd, newSize, 0); // Optional
+        emit PositionDecreased(msg.sender, addedSizeUsd, newSize, 0);
     }
 
     function addCollateral(uint256 amount) external {

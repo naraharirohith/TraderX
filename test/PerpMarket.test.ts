@@ -23,9 +23,9 @@ describe("PerpMarket", function () {
     await pool.setMarket(market.target);
 
     // LP deposits
-    await usdc.mint(lp.address, ethers.parseEther("1000"));
-    await usdc.connect(lp).approve(pool.target, ethers.parseEther("1000"));
-    await pool.connect(lp).deposit(ethers.parseEther("1000"));
+    await usdc.mint(lp.address, ethers.parseEther("5000"));
+    await usdc.connect(lp).approve(pool.target, ethers.parseEther("5000"));
+    await pool.connect(lp).deposit(ethers.parseEther("5000"));
 
     // Trader collateral
     await usdc.mint(trader.address, ethers.parseEther("200"));
@@ -34,6 +34,10 @@ describe("PerpMarket", function () {
 
   it("should open and close a long position with profit", async () => {
     await priceFeed.setPrice(BigInt(2000e8));
+
+    await usdc.mint(lp.address, ethers.parseEther("5000"));
+    await usdc.connect(lp).approve(pool.target, ethers.parseEther("5000"));
+    await pool.connect(lp).deposit(ethers.parseEther("5000"));
 
     await expect(
       market.connect(trader).openPosition(
