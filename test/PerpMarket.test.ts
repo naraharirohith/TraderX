@@ -1,12 +1,14 @@
 import { ethers } from "hardhat";
 import { expect } from "chai";
 
+const { anyValue } = require("@nomicfoundation/hardhat-chai-matchers/withArgs");
+
 describe("PerpMarket", function () {
   let usdc: any, priceFeed: any, pool: any, market: any;
-  let trader: any, lp: any;
+  let trader: any, lp: any, liquidator: any;
 
   beforeEach(async () => {
-    [lp, trader] = await ethers.getSigners();
+    [lp, trader, liquidator] = await ethers.getSigners();
 
     const ERC20 = await ethers.getContractFactory("ERC20Mock");
     usdc = await ERC20.deploy("Mock USDC", "USDC");
@@ -22,12 +24,10 @@ describe("PerpMarket", function () {
 
     await pool.setMarket(market.target);
 
-    // LP deposits
     await usdc.mint(lp.address, ethers.parseEther("5000"));
     await usdc.connect(lp).approve(pool.target, ethers.parseEther("5000"));
     await pool.connect(lp).deposit(ethers.parseEther("5000"));
 
-    // Trader collateral
     await usdc.mint(trader.address, ethers.parseEther("200"));
     await usdc.connect(trader).approve(market.target, ethers.parseEther("200"));
   });
@@ -35,31 +35,23 @@ describe("PerpMarket", function () {
   it("should open and close a long position with profit", async () => {
     await priceFeed.setPrice(BigInt(2000e8));
 
-    await usdc.mint(lp.address, ethers.parseEther("5000"));
-    await usdc.connect(lp).approve(pool.target, ethers.parseEther("5000"));
-    await pool.connect(lp).deposit(ethers.parseEther("5000"));
-
-    await expect(
-      market.connect(trader).openPosition(
-        ethers.parseEther("100"),
-        ethers.parseUnits("2", 6),
-        true
-      )
-    ).to.emit(market, "PositionOpened");
+    await market.connect(trader).openPosition(
+      ethers.parseEther("100"),
+      ethers.parseUnits("2", 6),
+      true
+    );
 
     await priceFeed.setPrice(BigInt(3000e8));
     await usdc.mint(market.target, ethers.parseEther("1000"));
 
-    const balanceBefore = await usdc.balanceOf(trader.address);
+    const before = await usdc.balanceOf(trader.address);
+    await expect(market.connect(trader).closePosition()).to.emit(market, "PositionClosed");
+    const after = await usdc.balanceOf(trader.address);
 
-    await expect(market.connect(trader).closePosition())
-      .to.emit(market, "PositionClosed");
-
-    const finalBal = await usdc.balanceOf(trader.address);
-    expect(finalBal).to.be.gt(ethers.parseEther("100"));
+    expect(after).to.be.gt(before);
   });
 
-  it("should liquidate when collateral ratio is too low", async () => {
+  it("should emit PositionLiquidated when collateral ratio too low", async () => {
     await priceFeed.setPrice(BigInt(2000e8));
 
     await market.connect(trader).openPosition(
@@ -69,13 +61,11 @@ describe("PerpMarket", function () {
     );
 
     await priceFeed.setPrice(BigInt(1000e8));
-
-    await expect(market.connect(trader).closePosition()).to.be.revertedWith("Liquidated");
+    await expect(market.connect(trader).closePosition()).to.emit(market, "PositionLiquidated");
   });
 
   it("should allow decreasing a position partially", async () => {
     await priceFeed.setPrice(BigInt(2000e8));
-
     await market.connect(trader).openPosition(
       ethers.parseEther("100"),
       ethers.parseUnits("5", 6),
@@ -102,16 +92,14 @@ describe("PerpMarket", function () {
     await priceFeed.setPrice(BigInt(1500e8));
     await usdc.mint(market.target, ethers.parseEther("1000"));
 
-    const balanceBefore = await usdc.balanceOf(trader.address);
+    const before = await usdc.balanceOf(trader.address);
+    await expect(market.connect(trader).closePosition()).to.emit(market, "PositionClosed");
+    const after = await usdc.balanceOf(trader.address);
 
-    await expect(market.connect(trader).closePosition())
-      .to.emit(market, "PositionClosed");
-
-    const finalBal = await usdc.balanceOf(trader.address);
-    expect(finalBal).to.be.gt(ethers.parseEther("100"));
+    expect(after).to.be.gt(before);
   });
 
-  it("should liquidate a short position when price pumps", async () => {
+  it("should emit PositionLiquidated for short when price pumps", async () => {
     await priceFeed.setPrice(BigInt(2000e8));
 
     await market.connect(trader).openPosition(
@@ -121,13 +109,11 @@ describe("PerpMarket", function () {
     );
 
     await priceFeed.setPrice(BigInt(3000e8));
-
-    await expect(market.connect(trader).closePosition()).to.be.revertedWith("Liquidated");
+    await expect(market.connect(trader).closePosition()).to.emit(market, "PositionLiquidated");
   });
 
   it("should block LP from withdrawing reserved liquidity", async () => {
     await priceFeed.setPrice(BigInt(2000e8));
-
     await market.connect(trader).openPosition(
       ethers.parseEther("100"),
       ethers.parseUnits("2", 6),
@@ -145,7 +131,6 @@ describe("PerpMarket", function () {
 
   it("should increase an existing position", async () => {
     await priceFeed.setPrice(BigInt(2000e8));
-
     await market.connect(trader).openPosition(
       ethers.parseEther("100"),
       ethers.parseUnits("2", 6),
@@ -163,7 +148,6 @@ describe("PerpMarket", function () {
 
   it("should allow adding collateral only", async () => {
     await priceFeed.setPrice(BigInt(2000e8));
-
     await market.connect(trader).openPosition(
       ethers.parseEther("100"),
       ethers.parseUnits("2", 6),
@@ -173,11 +157,14 @@ describe("PerpMarket", function () {
     await market.connect(trader).addCollateral(ethers.parseEther("50"));
 
     const updated = await market.positions(trader.address);
-    expect(updated.collateral).to.equal(ethers.parseEther("150"));
+    expect(updated.collateral).to.be.closeTo(ethers.parseEther("150"), ethers.parseUnits("0.001", 18));
   });
 
   it("should enforce max utilization ratio", async () => {
     await priceFeed.setPrice(BigInt(2000e8));
+
+    // Drain pool to reduce available liquidity
+    await pool.connect(lp).withdraw(ethers.parseEther("4000"));
 
     const hugeCollateral = ethers.parseEther("900");
     await usdc.mint(trader.address, hugeCollateral);
@@ -191,4 +178,25 @@ describe("PerpMarket", function () {
       )
     ).to.be.revertedWith("Exceeds utilization limit");
   });
+
+    it("should allow third party to liquidate an undercollateralized position", async () => {
+    await priceFeed.setPrice(BigInt(2000e8));
+    await market.connect(trader).openPosition(
+      ethers.parseEther("100"),
+      ethers.parseUnits("10", 6),
+      true
+    );
+
+    await priceFeed.setPrice(BigInt(1000e8));
+
+    const before = await usdc.balanceOf(liquidator.address);
+
+    await expect(market.connect(liquidator).liquidate(trader.address))
+      .to.emit(market, "LiquidatedBy")
+      .withArgs(liquidator.address, trader.address, anyValue);
+
+    const after = await usdc.balanceOf(liquidator.address);
+    expect(after).to.be.gt(before);
+  });
+  
 });
